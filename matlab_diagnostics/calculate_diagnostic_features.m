@@ -1,31 +1,38 @@
-function features_data = calculate_diagnostic_features(drilling_data, conn_mask)
+function features_data = calculate_diagnostic_features(drilling_data, conn_mask, ...
+    ECD, cuttings_load, packoff_index, MSE, config)
 % CALCULATE_DIAGNOSTIC_FEATURES Расчёт инженерных и статистических признаков
 %
 % Вход:
 %   drilling_data - struct с данными бурения
-%   conn_mask     - логический вектор [Nx1], true = соединение
+%   conn_mask - логический вектор [Nx1], true = соединение
+%   ECD, cuttings_load, packoff_index, MSE - физические параметры
+%   config - конфигурация
 %
 % Выход:
 %   features_data - struct с диагностическими признаками
 
 data = drilling_data.data;
 n_points = height(data);
-is_drilling = ~conn_mask;  % маска нормального бурения
+is_drilling = ~conn_mask;
 
 features_data = struct();
 features_data.is_drilling = is_drilling;
 
 %% Инженерные признаки давления
-% ECD margin относительно PP (overbalance) и FG (underbalance)
-features_data.ecd_vs_pp = data.ECD - data.PorePressure;
-features_data.fg_vs_ecd = data.FractureGradient - data.ECD;
+% ECD margin относительно PP и FG
+features_data.ecd_vs_pp = ECD - data.PorePressure;
+features_data.fg_vs_ecd = data.FractureGradient - ECD;
 features_data.mud_window = data.FractureGradient - data.PorePressure;
-
-% Критическое давление: минимум из PP margin и FG margin
 features_data.critical_pressure = min(features_data.ecd_vs_pp, features_data.fg_vs_ecd);
 
+%% Физические признаки
+features_data.cuttings_load = cuttings_load;
+features_data.packoff_index = packoff_index;
+features_data.MSE = MSE;
+features_data.ECD = ECD;
+
 %% Статистические признаки - Pit Volume (только по бурению)
-window = 20;  % 5 часов
+window = config.detectors.window;
 features_data.pit_volume_trend = zeros(n_points, 1);
 features_data.pit_volume_rate = zeros(n_points, 1);
 features_data.pit_volume_baseline = zeros(n_points, 1);
@@ -69,7 +76,7 @@ for i = window+1:n_points
     end
 end
 
-%% Статистические признаки - SPP (Standpipe Pressure)
+%% Статистические признаки - SPP
 features_data.spp_deviation = zeros(n_points, 1);
 features_data.spp_trend = zeros(n_points, 1);
 features_data.spp_baseline = zeros(n_points, 1);
@@ -84,7 +91,6 @@ for i = window+1:n_points
         features_data.spp_baseline(i) = mu;
         features_data.spp_deviation(i) = data.SPP(i) - mu;
         
-        % Тренд через линейную регрессию
         if length(baseline) >= 10
             x = (1:length(baseline))';
             p = polyfit(x, baseline, 1);
@@ -145,7 +151,6 @@ for i = window+1:n_points
         
         features_data.rop_normalized(i) = data.ROP(i) / mu;
         
-        % Тренд ROP
         x = (1:length(rop_baseline))';
         p = polyfit(x, rop_baseline, 1);
         features_data.rop_trend(i) = p(1);
@@ -166,14 +171,29 @@ for i = window+1:n_points
 end
 
 %% Композитные признаки
-% Индекс нестабильности: комбинация отклонений
+% Индекс нестабильности
 features_data.instability_index = abs(features_data.spp_deviation) ./ ...
                                    (features_data.spp_baseline + 1e-6) + ...
                                    abs(features_data.torque_zscore) ./ 5 + ...
                                    abs(features_data.hookload_zscore) ./ 5;
 
+% Индекс риска прихвата
+features_data.stuck_risk_index = features_data.packoff_index + ...
+                                  abs(features_data.torque_zscore) ./ 3 + ...
+                                  abs(features_data.hookload_zscore) ./ 3;
+
+% Индекс риска kick
+features_data.kick_risk_index = max(0, -features_data.ecd_vs_pp) * 10 + ...
+                                 abs(features_data.pit_volume_trend) ./ 2 + ...
+                                 abs(features_data.gas_zscore) ./ 5;
+
+% Индекс риска поглощения
+features_data.loss_risk_index = max(0, -features_data.fg_vs_ecd) * 10 + ...
+                                 abs(features_data.pit_volume_trend) ./ 2;
+
 fprintf('    Инженерных признаков: 4\n');
+fprintf('    Физических признаков: 4\n');
 fprintf('    Статистических признаков: 13\n');
-fprintf('    Композитных признаков: 1\n');
+fprintf('    Композитных признаков: 5\n');
 
 end

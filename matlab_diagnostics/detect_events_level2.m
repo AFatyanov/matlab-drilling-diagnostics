@@ -4,7 +4,7 @@ function events = detect_events_level2(drilling_data, features_data, conn_mask)
 % Вход:
 %   drilling_data - struct с данными бурения
 %   features_data - struct с диагностическими признаками
-%   conn_mask     - логический вектор [Nx1], true = соединение
+%   conn_mask - логический вектор [Nx1], true = соединение
 %
 % Выход:
 %   events - table с обнаруженными событиями
@@ -18,11 +18,9 @@ events = table();
 event_list = {};
 
 %% Правило 1: Kick Detection - ECD близок к Pore Pressure
-% Инженерный признак: ECD - PP < 0.05 г/см³ (низкий overbalance)
-% + рост газа и pit volume
-kick_ecd_margin = 0.05;        % г/см³
-kick_gas_threshold = 3.0;      % %
-kick_pit_threshold = 1.5;      % м³
+kick_ecd_margin = 0.05;
+kick_gas_threshold = 3.0;
+kick_pit_threshold = 1.5;
 
 for i = 40:n_points
     if ~is_drilling(i), continue; end
@@ -32,7 +30,6 @@ for i = 40:n_points
     pit_rising = features_data.pit_volume_trend(i) > kick_pit_threshold;
     
     if ecd_close && gas_high && pit_rising
-        % Найти начало и конец события
         start_idx = i;
         for j = i-1:-1:max(1,i-30)
             if ~is_drilling(j) || features_data.ecd_vs_pp(j) > 0.1
@@ -67,10 +64,8 @@ for i = 40:n_points
 end
 
 %% Правило 2: Mud Losses - ECD близок к Fracture Gradient
-% Инженерный признак: FG - ECD < 0.05 г/см³ (низкий underbalance margin)
-% + падение pit volume и SPP
-loss_fg_margin = 0.05;         % г/см³
-loss_pit_threshold = -1.5;     % м³
+loss_fg_margin = 0.05;
+loss_pit_threshold = -1.5;
 
 for i = 40:n_points
     if ~is_drilling(i), continue; end
@@ -112,42 +107,43 @@ for i = 40:n_points
     end
 end
 
-%% Правило 3: Pack-off - рост давления + момента + падение ROP
-% Инженерный признак: устойчивый тренд роста SPP + torque
-packoff_spp_trend = 0.5;       % бар/точка
-packoff_torque_zscore = 1.5;   % z-score
-packoff_rop_threshold = 15;    % м/ч
+%% Правило 3: Pack-off - packoff_index + тренды
+packoff_index_threshold = 1.0;
+packoff_spp_trend = 0.5;
+packoff_torque_zscore = 1.5;
+packoff_rop_threshold = 15;
 
 for i = 40:n_points
     if ~is_drilling(i), continue; end
     
+    packoff_high = features_data.packoff_index(i) > packoff_index_threshold;
     spp_rising = features_data.spp_trend(i) > packoff_spp_trend;
     torque_high = features_data.torque_zscore(i) > packoff_torque_zscore;
     rop_low = data.ROP(i) < packoff_rop_threshold && data.ROP(i) > 0;
     
-    if spp_rising && torque_high && rop_low
+    if packoff_high && spp_rising && torque_high && rop_low
         start_idx = i;
         for j = i-1:-1:max(1,i-30)
-            if ~is_drilling(j) || features_data.spp_trend(j) < 0.3
+            if ~is_drilling(j) || features_data.packoff_index(j) < 0.7
                 break;
             end
-            if features_data.spp_trend(j) > packoff_spp_trend
+            if features_data.packoff_index(j) > packoff_index_threshold
                 start_idx = j;
             end
         end
         
         end_idx = i;
         for j = i+1:min(n_points,i+30)
-            if ~is_drilling(j) || features_data.spp_trend(j) < 0.3
+            if ~is_drilling(j) || features_data.packoff_index(j) < 0.7
                 break;
             end
-            if features_data.spp_trend(j) > packoff_spp_trend
+            if features_data.packoff_index(j) > packoff_index_threshold
                 end_idx = j;
             end
         end
         
         if end_idx - start_idx >= 4
-            severity = min(100, features_data.spp_deviation(i) / 2);
+            severity = min(100, features_data.packoff_index(i) * 50);
             confidence = min(0.9, 0.7 + severity/200);
             
             event_list{end+1} = struct('start_idx', start_idx, 'end_idx', end_idx, ...
@@ -158,35 +154,37 @@ for i = 40:n_points
     end
 end
 
-%% Правило 4: Stuck Pipe - остановка бурения + аномальный hookload
-% Инженерный признак: ROP=0 длительно + резкий рост hookload
-stuck_hookload_zscore = 2.5;   % z-score
-stuck_min_duration = 8;        % минимум 2 часа
+%% Правило 4: Stuck Pipe - stuck_risk_index
+stuck_index_threshold = 1.0;
+stuck_min_duration = 8;
 
 for i = 40:n_points
     if ~is_drilling(i), continue; end
     
-    % Проверить что ROP=0 длительно
-    rop_zero_duration = 0;
-    for j = i:min(n_points, i+20)
-        if data.ROP(j) < 0.5
-            rop_zero_duration = rop_zero_duration + 1;
-        else
+    % Проверяем stuck_risk_index
+    if features_data.stuck_risk_index(i) > stuck_index_threshold
+        % Проверяем что ROP=0 длительно
+        rop_zero_duration = 0;
+        for j = i:min(n_points, i+20)
+            if data.ROP(j) < 0.5
+                rop_zero_duration = rop_zero_duration + 1;
+            else
+                break;
+            end
+        end
+        
+        if rop_zero_duration >= stuck_min_duration
+            start_idx = i;
+            end_idx = i + rop_zero_duration - 1;
+            
+            severity = 85;
+            confidence = min(0.9, 0.8 + features_data.stuck_risk_index(i)/10);
+            
+            event_list{end+1} = struct('start_idx', start_idx, 'end_idx', end_idx, ...
+                                        'type', 'stuck', 'confidence', confidence, ...
+                                        'severity', severity);
             break;
         end
-    end
-    
-    if rop_zero_duration >= stuck_min_duration && features_data.hookload_zscore(i) > stuck_hookload_zscore
-        start_idx = i;
-        end_idx = i + rop_zero_duration - 1;
-        
-        severity = 85;  % прихват всегда высокая серьёзность
-        confidence = min(0.9, 0.8 + features_data.hookload_zscore(i)/10);
-        
-        event_list{end+1} = struct('start_idx', start_idx, 'end_idx', end_idx, ...
-                                    'type', 'stuck', 'confidence', confidence, ...
-                                    'severity', severity);
-        break;
     end
 end
 
@@ -213,9 +211,9 @@ if ~isempty(event_list)
         elseif strcmp(evt.type, 'losses')
             description_arr{i} = 'Уровень 2: ECD близко к FG + падение pit (исключены соединения)';
         elseif strcmp(evt.type, 'packoff')
-            description_arr{i} = 'Уровень 2: тренд SPP + torque + падение ROP (исключены соединения)';
+            description_arr{i} = 'Уровень 2: packoff_index + тренды SPP/Torque/ROP (исключены соединения)';
         else
-            description_arr{i} = 'Уровень 2: ROP=0 + аномальный hookload (исключены соединения)';
+            description_arr{i} = 'Уровень 2: stuck_risk_index + ROP=0 (исключены соединения)';
         end
     end
     

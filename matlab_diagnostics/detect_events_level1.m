@@ -4,7 +4,7 @@ function events = detect_events_level1(drilling_data, features_data, conn_mask)
 % Вход:
 %   drilling_data - struct с данными бурения
 %   features_data - struct с диагностическими признаками
-%   conn_mask     - логический вектор [Nx1], true = соединение
+%   conn_mask - логический вектор [Nx1], true = соединение
 %
 % Выход:
 %   events - table с обнаруженными событиями
@@ -18,12 +18,10 @@ events = table();
 event_list = {};
 
 %% Правило 1: Kick Detection (газонефтеводопроявление)
-% Признаки: рост pit volume (>2 м³), рост газа (>3%), рост SPP (>10 бар)
-% Только при бурении (не на соединениях)
-kick_threshold_pit = 2.0;      % м³
-kick_threshold_gas = 3.0;      % %
-kick_threshold_spp = 10;       % бар
-min_duration = 4;              % минимум 1 час (4 точки)
+kick_threshold_pit = 2.0;
+kick_threshold_gas = 3.0;
+kick_threshold_spp = 10;
+min_duration = 4;
 
 for i = 30:n_points
     if ~is_drilling(i), continue; end
@@ -33,7 +31,6 @@ for i = 30:n_points
     spp_ok = features_data.spp_deviation(i) > kick_threshold_spp;
     
     if pit_ok && gas_ok && spp_ok
-        % Найти начало события (обратно до потери признака)
         start_idx = i;
         for j = i-1:-1:max(1,i-30)
             if ~is_drilling(j) || features_data.pit_volume_trend(j) < 1.0
@@ -44,7 +41,6 @@ for i = 30:n_points
             end
         end
         
-        % Найти конец (вперёд до потери признака)
         end_idx = i;
         for j = i+1:min(n_points,i+30)
             if ~is_drilling(j) || features_data.pit_volume_trend(j) < 1.0
@@ -55,20 +51,18 @@ for i = 30:n_points
             end
         end
         
-        % Проверить минимальную длительность
         if end_idx - start_idx >= min_duration
             confidence = min(0.9, 0.6 + features_data.pit_volume_trend(i)/10);
             event_list{end+1} = struct('start_idx', start_idx, 'end_idx', end_idx, ...
                                         'type', 'kick', 'confidence', confidence);
-            break;  % одно событие kick
+            break;
         end
     end
 end
 
-%% Правило 2: Mud Losses (поглощение бурового раствора)
-% Признаки: падение pit volume (<-2 м³), падение SPP (<-15 бар)
-loss_threshold_pit = -2.0;     % м³
-loss_threshold_spp = -15;      % бар
+%% Правило 2: Mud Losses (поглощение)
+loss_threshold_pit = -2.0;
+loss_threshold_spp = -15;
 
 for i = 30:n_points
     if ~is_drilling(i), continue; end
@@ -107,10 +101,9 @@ for i = 30:n_points
 end
 
 %% Правило 3: Pack-off (затяжки/посадки)
-% Признаки: рост SPP (>25 бар), рост torque (z-score > 2.0), падение ROP
-packoff_threshold_spp = 25;    % бар
-packoff_threshold_torque = 2.0; % z-score
-packoff_threshold_rop = 10;    % м/ч
+packoff_threshold_spp = 25;
+packoff_threshold_torque = 2.0;
+packoff_threshold_rop = 10;
 
 for i = 30:n_points
     if ~is_drilling(i), continue; end
@@ -149,15 +142,13 @@ for i = 30:n_points
     end
 end
 
-%% Правило 4: Stuck Pipe (прихват колонны)
-% Признаки: ROP=0 (длительно, >1 час), резкий рост hookload (z-score > 3.0)
-stuck_threshold_hookload = 3.0; % z-score
-stuck_min_duration = 8;         % минимум 2 часа (8 точек)
+%% Правило 4: Stuck Pipe (прихват)
+stuck_threshold_hookload = 3.0;
+stuck_min_duration = 8;
 
 for i = 30:n_points
     if ~is_drilling(i), continue; end
     
-    % Проверить что ROP=0 длительно
     rop_zero_duration = 0;
     for j = i:min(n_points, i+20)
         if data.ROP(j) < 0.1

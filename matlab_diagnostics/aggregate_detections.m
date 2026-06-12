@@ -1,5 +1,12 @@
-function final_events = aggregate_detections(events_L1, events_L2, events_L3)
+function final_events = aggregate_detections(events_L1, events_L2, events_L3, complications)
 % AGGREGATE_DETECTIONS Объединение результатов трёх уровней детекции
+%
+% Вход:
+%   events_L1, events_L2, events_L3 - таблицы событий от детекторов
+%   complications - таблица физических осложнений (от trigger_complications)
+%
+% Выход:
+%   final_events - таблица с агрегированными событиями
 
 %% Объединение всех событий
 all_events = [events_L1; events_L2; events_L3];
@@ -42,11 +49,59 @@ for t = 1:length(unique_types)
         merged_md = type_events.start_md(overlapping(1));
         merged_type = unique_types{t};
         
-        confidences = type_events.confidence(overlapping);
-        merged_confidence = mean(confidences);
+        % Взвешенная модель риска
+        weights = [0.25, 0.40, 0.20, 0.15];  % L1, L2, L3, severity
         
-        risk_score = merged_confidence * 100;
+        % Определяем уровень каждого детектора
+        l1_conf = 0; l2_conf = 0; l3_conf = 0;
+        l1_count = 0; l2_count = 0; l3_count = 0;
         
+        for k = 1:length(overlapping)
+            idx_k = overlapping(k);
+            % Определяем уровень по описанию
+            desc = type_events.description{idx_k};
+            if contains(desc, 'Уровень 1')
+                l1_conf = l1_conf + type_events.confidence(idx_k);
+                l1_count = l1_count + 1;
+            elseif contains(desc, 'Уровень 2')
+                l2_conf = l2_conf + type_events.confidence(idx_k);
+                l2_count = l2_count + 1;
+            elseif contains(desc, 'Уровень 3')
+                l3_conf = l3_conf + type_events.confidence(idx_k);
+                l3_count = l3_count + 1;
+            end
+        end
+        
+        % Средние значения по уровням
+        if l1_count > 0, l1_conf = l1_conf / l1_count; end
+        if l2_count > 0, l2_conf = l2_conf / l2_count; end
+        if l3_count > 0, l3_conf = l3_conf / l3_count; end
+        
+        % Физическая тяжесть (severity)
+        phys_severity = 0.5;  % по умолчанию средняя
+        if ~isempty(complications)
+            % Ищем соответствующее физическое осложнение
+            for c = 1:height(complications)
+                comp = complications(c, :);
+                if contains(comp.type{1}, merged_type) && ...
+                   comp.start_time{1} >= merged_start && ...
+                   comp.start_time{1} <= merged_end
+                    phys_severity = comp.severity / 100;
+                    break;
+                end
+            end
+        end
+        
+        % Расчёт risk score
+        risk_score = 100 * (weights(1) * l1_conf + ...
+                           weights(2) * l2_conf + ...
+                           weights(3) * l3_conf + ...
+                           weights(4) * phys_severity);
+        
+        % Конфиденс
+        merged_confidence = mean(type_events.confidence(overlapping));
+        
+        % Уровень уверенности
         if merged_confidence >= 0.75
             conf_level = 'высокий';
         elseif merged_confidence >= 0.60
@@ -55,6 +110,7 @@ for t = 1:length(unique_types)
             conf_level = 'низкий';
         end
         
+        % Серьёзность
         if risk_score >= 80
             severity = 'critical';
         elseif risk_score >= 60
@@ -65,17 +121,18 @@ for t = 1:length(unique_types)
             severity = 'minor';
         end
         
-        explanation = sprintf('Обнаружено %d детектор(ов). Тип: %s. Confidence: %.0f%%. ', ...
-                              length(overlapping), merged_type, merged_confidence*100);
+        % Объяснение с физическими деталями
+        explanation = sprintf('Обнаружено %d детектор(ов). Тип: %s. Confidence: %.0f%%. Risk score: %.0f/100. ', ...
+                              length(overlapping), merged_type, merged_confidence*100, risk_score);
         
         if strcmp(merged_type, 'kick')
-            explanation = [explanation 'Признаки: рост pit volume, газопоказаний, давления.'];
+            explanation = [explanation 'Физика: ECD < PorePressure, приток пластового флюида, рост Pit Volume и Gas.'];
         elseif strcmp(merged_type, 'losses')
-            explanation = [explanation 'Признаки: падение pit volume, давления в манифольде.'];
+            explanation = [explanation 'Физика: ECD > FractureGradient, поглощение раствора в пласт, падение Pit Volume.'];
         elseif strcmp(merged_type, 'packoff')
-            explanation = [explanation 'Признаки: рост давления, момента, падение ROP.'];
+            explanation = [explanation 'Физика: высокая загрузка шлама (packoff_index), рост SPP и Torque, падение ROP.'];
         elseif strcmp(merged_type, 'stuck')
-            explanation = [explanation 'Признаки: остановка бурения, рост hookload и torque.'];
+            explanation = [explanation 'Физика: прихват колонны (механический или дифференциальный), ROP=0, аномалии Hookload и Torque.'];
         end
         
         merged_list{end+1} = struct('start_time', merged_start, ...

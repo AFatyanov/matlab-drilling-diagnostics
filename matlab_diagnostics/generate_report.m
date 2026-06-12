@@ -1,10 +1,11 @@
-function report_text = generate_report(drilling_data, final_events, conn_table)
+function report_text = generate_report(drilling_data, final_events, conn_table, complications)
 % GENERATE_REPORT Генерация текстового отчёта на русском языке
 %
 % Вход:
 %   drilling_data - struct с данными бурения
-%   final_events  - table с событиями
-%   conn_table    - table с интервалами соединений
+%   final_events - table с событиями
+%   conn_table - table с интервалами соединений
+%   complications - таблица физических осложнений
 %
 % Выход:
 %   report_text - string с итоговым отчётом
@@ -52,8 +53,20 @@ if ~isempty(conn_table)
     report{end+1} = '';
 end
 
+%% Физические осложнения
+if ~isempty(complications)
+    report{end+1} = '--- ФИЗИЧЕСКИЕ ОСЛОЖНЕНИЯ (триггеры) ---';
+    report{end+1} = sprintf('Сработало осложнений: %d', height(complications));
+    for i = 1:height(complications)
+        comp = complications(i, :);
+        report{end+1} = sprintf('  %d. %s (%s) - тяжесть: %.0f%%', ...
+            i, comp.type{1}, comp.mechanism{1}, comp.severity);
+    end
+    report{end+1} = '';
+end
+
 %% Обнаруженные осложнения
-report{end+1} = '--- ОБНАРУЖЕННЫЕ ОСЛОЖНЕНИЯ ---';
+report{end+1} = '--- ОБНАРУЖЕННЫЕ ОСЛОЖНЕНИЯ (детекторы) ---';
 
 if isempty(final_events)
     report{end+1} = 'Осложнения не обнаружены.';
@@ -84,28 +97,31 @@ else
     report{end+1} = '';
 end
 
-%% Улучшения в этой версии
-report{end+1} = '--- УЛУЧШЕНИЯ СИСТЕМЫ ---';
+%% Улучшения системы
+report{end+1} = '--- УЛУЧШЕНИЯ СИСТЕМЫ (v2.0 - Physics-Driven) ---';
+report{end+1} = '✓ Физическая модель пластов с литологией и градиентами давления';
+report{end+1} = '✓ Расчёт гидравлики и ECD через annular pressure loss';
+report{end+1} = '✓ Механическая удельная энергия (MSE) для оценки эффективности бурения';
+report{end+1} = '✓ Модель очистки ствола с расчётом cuttings load и packoff index';
+report{end+1} = '✓ Причинные триггеры осложнений на основе физических условий';
+report{end+1} = '✓ Разделение stuck pipe на механический и дифференциальный';
+report{end+1} = '✓ Взвешенная модель risk score с учётом физической тяжести';
+report{end+1} = '✓ Физические объяснения в отчёте (ECD, pressure margins, cuttings transport)';
 report{end+1} = '✓ Фильтрация ложных срабатываний на соединениях свечей';
-report{end+1} = '✓ Калиброванные пороговые значения для всех детекторов';
-report{end+1} = '✓ Физические корреляции между параметрами (WOB-RPM-Torque-ROP)';
-report{end+1} = '✓ Нелинейное развитие осложнений (фазы: начало-развитие-стабилизация)';
-report{end+1} = '✓ Авторегрессионный шум для реалистичности данных';
-report{end+1} = '✓ Обработка ошибок при сохранении файлов';
 report{end+1} = '';
 
 %% Ограничения модели
 report{end+1} = '--- ОГРАНИЧЕНИЯ МОДЕЛИ ---';
 report{end+1} = '1. Синтетические данные не учитывают все реальные факторы';
-report{end+1} = '2. Пороговые значения требуют калибровки на реальных данных';
-report{end+1} = '3. Модель не учитывает геологические осложнения';
+report{end+1} = '2. Упрощённая гидравлика (эмпирические коэффициенты)';
+report{end+1} = '3. Модель не учитывает геологические осложнения (wellbore instability)';
 report{end+1} = '4. Отсутствует машинное обучение для адаптации';
 report{end+1} = '5. Детекторы настроены для обнаружения, а не прогнозирования';
 report{end+1} = '';
 
 %% Рекомендации
 report{end+1} = '--- РЕКОМЕНДАЦИИ ПО РАЗВИТИЮ ---';
-report{end+1} = '1. Калибровка на реальных данных конкретной скважины';
+report{end+1} = '1. Калибровка гидравлических коэффициентов на реальных данных';
 report{end+1} = '2. Добавление ML-моделей (Random Forest, LSTM)';
 report{end+1} = '3. Расширение типов осложнений (wellbore instability, tight hole)';
 report{end+1} = '4. Real-time режим обработки данных';

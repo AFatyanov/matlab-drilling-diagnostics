@@ -1,5 +1,5 @@
 %% RUN_FULL_DIAGNOSTICS - Полная диагностика бурения одной командой
-% Запускает весь цикл: генерация → диагностика → графики → сохранение
+% Запускает весь цикл: генерация → физика → диагностика → графики → сохранение
 
 clear all; close all; clc;
 
@@ -7,48 +7,101 @@ fprintf('============================================\n');
 fprintf('ПОЛНАЯ ДИАГНОСТИКА ОСЛОЖНЕНИЙ БУРЕНИЯ\n');
 fprintf('============================================\n\n');
 
-%% Шаг 1: Генерация данных
-fprintf('[1/11] Генерация данных...\n');
+%% Шаг 1: Загрузка конфигурации
+fprintf('[1/14] Загрузка конфигурации...\n');
+config = get_default_config();
+
+%% Шаг 2: Генерация модели пластов
+fprintf('[2/14] Генерация модели пластов...\n');
+formations = generate_formation_model();
+
+%% Шаг 3: Генерация базовых данных бурения
+fprintf('[3/14] Генерация данных бурения...\n');
 drilling_data = generate_synthetic_drilling();
 
-%% Шаг 2: Детекция соединений
-fprintf('[2/11] Детекция соединений...\n');
+%% Шаг 4: Детекция соединений
+fprintf('[4/14] Детекция соединений...\n');
 [conn_mask, conn_table] = detect_connections(drilling_data);
 
-%% Шаг 3: Моделирование осложнений
-fprintf('[3/11] Моделирование осложнений...\n');
-drilling_data = inject_complications(drilling_data, conn_mask);
+%% Шаг 5: Инициализация физических состояний
+fprintf('[5/14] Инициализация физических состояний...\n');
+n_points = height(drilling_data.data);
+cuttings_load = zeros(n_points, 1);
+MSE = zeros(n_points, 1);
+annular_velocity = zeros(n_points, 1);
+pressure_loss_annulus = zeros(n_points, 1);
+cuttings_pressure_loss = zeros(n_points, 1);
+ECD = drilling_data.data.MudWeight;  % начальное приближение
+cleaning_efficiency = zeros(n_points, 1);
+packoff_index = zeros(n_points, 1);
 
-%% Шаг 4: Расчёт признаков
-fprintf('[4/11] Расчёт признаков...\n');
-features_data = calculate_diagnostic_features(drilling_data, conn_mask);
+%% Шаг 6: Расчёт физических параметров
+fprintf('[6/14] Расчёт физических параметров...\n');
 
-%% Шаг 5: Детекция L1
-fprintf('[5/11] Детекция L1 (эвристики)...\n');
+% Шаг 6a: Вычисляем annular_velocity для всех точек (игнорируя cuttings_load)
+fprintf('  6a: Расчёт гидравлики (без шлама)...\n');
+[ECD, annular_velocity, pressure_loss_annulus, ~] = calculate_hydraulics(...
+    drilling_data, zeros(n_points, 1), config);
+
+% Шаг 6b: Вычисляем cuttings_load для всех точек
+fprintf('  6b: Расчёт очистки ствола...\n');
+[cuttings_load, cleaning_efficiency, packoff_index] = calculate_hole_cleaning(...
+    drilling_data, annular_velocity, config);
+
+% Шаг 6c: Обновляем ECD с учётом cuttings_load
+fprintf('  6c: Обновление ECD с учётом шлама...\n');
+[ECD, ~, ~, cuttings_pressure_loss] = calculate_hydraulics(...
+    drilling_data, cuttings_load, config);
+
+% Обновляем ECD в данных
+drilling_data.data.ECD = ECD;
+
+% Шаг 6d: Вычисляем MSE для всех точек
+fprintf('  6d: Расчёт MSE...\n');
+[MSE, ~, ~] = calculate_mse(drilling_data, config);
+
+fprintf('    Расчёт физических параметров завершён\n');
+
+%% Шаг 7: Триггер осложнений на основе физических условий
+fprintf('[7/14] Триггер осложнений...\n');
+complications = trigger_complications(drilling_data, ECD, cuttings_load, ...
+    packoff_index, MSE, conn_mask, config);
+
+%% Шаг 8: Применение отклика датчиков
+fprintf('[8/14] Применение отклика датчиков...\n');
+drilling_data = apply_sensor_response(drilling_data, complications, ...
+    ECD, cuttings_load, packoff_index, MSE, conn_mask, config);
+
+%% Шаг 9: Расчёт диагностических признаков
+fprintf('[9/14] Расчёт диагностических признаков...\n');
+features_data = calculate_diagnostic_features(drilling_data, conn_mask, ...
+    ECD, cuttings_load, packoff_index, MSE, config);
+
+%% Шаг 10: Детекция осложнений (3 уровня)
+fprintf('[10/14] Детекция L1 (эвристики)...\n');
 events_L1 = detect_events_level1(drilling_data, features_data, conn_mask);
 
-%% Шаг 6: Детекция L2
-fprintf('[6/11] Детекция L2 (инженерные)...\n');
+fprintf('[11/14] Детекция L2 (инженерные)...\n');
 events_L2 = detect_events_level2(drilling_data, features_data, conn_mask);
 
-%% Шаг 7: Детекция L3
-fprintf('[7/11] Детекция L3 (статистика)...\n');
+fprintf('[12/14] Детекция L3 (статистика)...\n');
 events_L3 = detect_events_level3(drilling_data, features_data, conn_mask);
 
-%% Шаг 8: Агрегация
-fprintf('[8/11] Агрегация...\n');
-final_events = aggregate_detections(events_L1, events_L2, events_L3);
+%% Шаг 11: Агрегация с взвешенной моделью риска
+fprintf('[13/14] Агрегация результатов...\n');
+final_events = aggregate_detections(events_L1, events_L2, events_L3, complications);
 
-%% Шаг 9: Графики
-fprintf('[9/11] Построение графиков...\n');
-fig_handles = plot_diagnostics(drilling_data, features_data, final_events, conn_mask);
+%% Шаг 12: Графики
+fprintf('[14/14] Построение графиков...\n');
+fig_handles = plot_diagnostics(drilling_data, features_data, final_events, ...
+    conn_mask, ECD, cuttings_load, packoff_index, MSE);
 
-%% Шаг 10: Отчёт
-fprintf('[10/11] Генерация отчёта...\n');
-report_text = generate_report(drilling_data, final_events, conn_table);
+%% Шаг 13: Генерация отчёта
+fprintf('[15/15] Генерация отчёта...\n');
+report_text = generate_report(drilling_data, final_events, conn_table, complications);
 
-%% Шаг 11: Сохранение ВСЕХ файлов
-fprintf('[11/11] Сохранение результатов...\n');
+%% Шаг 14: Сохранение результатов
+fprintf('Сохранение результатов...\n');
 
 output_dir = fullfile(fileparts(mfilename('fullpath')), '..', 'output');
 if ~exist(output_dir, 'dir')
@@ -85,6 +138,11 @@ results.features_data = features_data;
 results.final_events = final_events;
 results.conn_mask = conn_mask;
 results.conn_table = conn_table;
+results.complications = complications;
+results.ECD = ECD;
+results.cuttings_load = cuttings_load;
+results.packoff_index = packoff_index;
+results.MSE = MSE;
 results.timestamp = datetime('now');
 save(fullfile(output_dir, 'drilling_diagnostics_results.mat'), 'results');
 
@@ -147,13 +205,13 @@ fprintf('\n============================================\n');
 fprintf('ДИАГНОСТИКА ЗАВЕРШЕНА!\n');
 fprintf('============================================\n');
 fprintf('Результаты: %s\n', output_dir);
-fprintf('  ✓ raw_drilling_data.csv\n');
-fprintf('  ✓ diagnostic_features.csv\n');
-fprintf('  ✓ detected_events.csv\n');
-fprintf('  ✓ drilling_diagnostics_results.mat\n');
-fprintf('  ✓ diagnostic_summary.txt\n');
-fprintf('  ✓ diagnostic_timeseries.png\n');
-fprintf('  ✓ risk_timeline.png\n');
-fprintf('  ✓ events_for_web.json\n');
+fprintf('  raw_drilling_data.csv\n');
+fprintf('  diagnostic_features.csv\n');
+fprintf('  detected_events.csv\n');
+fprintf('  drilling_diagnostics_results.mat\n');
+fprintf('  diagnostic_summary.txt\n');
+fprintf('  diagnostic_timeseries.png\n');
+fprintf('  risk_timeline.png\n');
+fprintf('  events_for_web.json\n');
 fprintf('\nОбнаружено осложнений: %d\n', height(final_events));
 fprintf('============================================\n');
